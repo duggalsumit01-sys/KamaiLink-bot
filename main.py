@@ -2,7 +2,6 @@ import os
 import re
 import requests
 import json
-from urllib.parse import quote
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 from telegram import Update
@@ -10,7 +9,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# --- 1. RENDER PORT FIX (Dummy Web Server) ---
+# --- 1. RENDER PORT FIX ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -39,10 +38,43 @@ if FIREBASE_CREDENTIALS and not firebase_admin._apps:
 
 db = firestore.client() if firebase_admin._apps else None
 
-# --- 3. BOT HANDLERS ---
+# --- 3. HELPER FUNCTION FOR CUELINKS ---
+def get_cuelinks_affiliate_url(original_url):
+    # Expand short URL first if it's a short link (like dl.flipkart.com or amzn.to)
+    try:
+        res = requests.head(original_url, allow_redirects=True, timeout=5)
+        final_url = res.url
+    except Exception:
+        final_url = original_url
+
+    # Cuelinks API v2 POST Request
+    api_endpoint = "https://www.cuelinks.com/api/v2/links.json"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f'Token token="{CUELINKS_API_KEY}"'
+    }
+    payload = {
+        "url": final_url
+    }
+
+    try:
+        response = requests.post(api_endpoint, json=payload, headers=headers, timeout=10)
+        data = response.json()
+        print("Cuelinks Response:", data) # Logs 'ਚ ਦੇਖਣ ਲਈ
+        
+        if "affiliate_url" in data and data["affiliate_url"]:
+            return data["affiliate_url"]
+        elif "url" in data and data["url"]:
+            return data["url"]
+    except Exception as e:
+        print(f"API Error: {e}")
+        
+    return None
+
+# --- 4. BOT HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_first_name = update.effective_user.first_name
-    await update.message.reply_text(f"नमस्कार {user_first_name}! KamaiLink बॉट में आपका स्वागत है। मुझे कोई भी शॉपिंग लिंक भेजें, मैं उसे एफिलिएट लिंक में बदल दूंगा।")
+    await update.message.reply_text(f"ਨਮਸਕਾਰ {user_first_name}! ਤੁਹਾਡਾ KamaiLink ਬੋਟ ਵਿੱਚ ਸਵਾਗਤ ਹੈ। ਮੈਨੂੰ ਕੋਈ ਵੀ ਸ਼ਾਪਿੰਗ ਲਿੰਕ ਭੇਜੋ, ਮੈਂ ਉਸਨੂੰ ਅਫੀਲੀਏਟ ਲਿੰਕ 'ਚ ਬਦਲ ਦੇਵਾਂਗਾ।")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -50,28 +82,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     urls = re.findall(url_pattern, text)
     
     if not urls:
-        await update.message.reply_text("कृपया एक सही प्रोडक्ट लिंक भेजें।")
+        await update.message.reply_text("ਕਿਰਪਾ ਕਰਕੇ ਇੱਕ ਸਹੀ ਪ੍ਰੋਡਕਟ ਲਿੰਕ ਭੇਜੋ।")
         return
 
     original_url = urls[0]
-    await update.message.reply_text("आपका लिंक कन्वर्ट किया जा रहा है, कृपया इंतज़ार करें...")
+    await update.message.reply_text("ਤੁਹਾਡਾ ਲਿੰਕ ਕਨਵਰਟ ਕੀਤਾ ਜਾ ਰਿਹਾ ਹੈ, ਕਿਰਪਾ ਕਰਕੇ ਇੰਤਜ਼ਾਰ ਕਰੋ...")
 
-    # Cuelinks API Call
-    try:
-        encoded_url = quote(original_url, safe='')
-        api_url = f"https://www.cuelinks.com/api/v2/links.json?url={encoded_url}&api_key={CUELINKS_API_KEY}"
-        headers = {'Authorization': f'Token token="{CUELINKS_API_KEY}"'}
-        
-        response = requests.get(api_url, headers=headers)
-        data = response.json()
-        
-        affiliate_url = data.get("affiliate_url") or data.get("url") or original_url
-        await update.message.reply_text(f"आपका एफिलिएट लिंक तैयार है:\n\n{affiliate_url}")
-    except Exception as e:
-        print(f"Cuelinks Error: {e}")
-        await update.message.reply_text("लिंक कन्वर्ट करने में कोई समस्या आई है। कृपया बाद में प्रयास करें।")
+    affiliate_url = get_cuelinks_affiliate_url(original_url)
 
-# --- 4. MAIN EXECUTION ---
+    if affiliate_url and affiliate_url != original_url:
+        await update.message.reply_text(f"ਤੁਹਾਡਾ ਅਫੀਲੀਏਟ ਲਿੰਕ ਤਿਆਰ ਹੈ:\n\n{affiliate_url}")
+    else:
+        await update.message.reply_text("Cuelinks ਤੋਂ ਲਿੰਕ ਕਨਵਰਟ ਨਹੀਂ ਹੋ ਸਕਿਆ। ਕਿਰਪਾ ਕਰਕੇ ਲਿੰਕ ਜਾਂ ਆਪਣਾ Cuelinks ਅਕਾਊਂਟ ਸਟੇਟਸ ਚੈੱਕ ਕਰੋ।")
+
+# --- 5. MAIN EXECUTION ---
 def main():
     if not BOT_TOKEN:
         print("Error: BOT_TOKEN missing!")
